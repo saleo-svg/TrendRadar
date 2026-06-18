@@ -10,7 +10,130 @@ from typing import Any, Dict, List, Optional, Callable
 
 from trendradar.report.helpers import html_escape, calculate_rank_trend
 from trendradar.utils.time import convert_time_for_display
+from trendradar.utils.url import parse_url_resource, format_resource_label
 from trendradar.ai.formatter import render_ai_analysis_html_rich
+
+
+# 平台图标映射（Unicode emoji + 简短标签，让用户能一眼看出"小红书/B站/微博"等具体平台）
+PLATFORM_ICON_MAP = {
+    "weibo": ("📱", "微博"),
+    "douyin": ("🎬", "抖音"),
+    "xiaohongshu": ("📕", "小红书"),
+    "redbook": ("📕", "小红书"),
+    "xhs": ("📕", "小红书"),
+    "bilibili-hot-search": ("📺", "B站"),
+    "bilibili": ("📺", "B站"),
+    "zhihu": ("💡", "知乎"),
+    "toutiao": ("📰", "头条"),
+    "baidu": ("🔍", "百度"),
+    "tieba": ("💬", "贴吧"),
+    "wallstreetcn-hot": ("📈", "华尔街见闻"),
+    "thepaper": ("📰", "澎湃"),
+    "ifeng": ("📰", "凤凰"),
+    "cls-hot": ("📈", "财联社"),
+    "hacker-news": ("💻", "Hacker News"),
+    "ruanyifeng": ("📝", "阮一峰"),
+    "yahoo-finance": ("📈", "雅虎财经"),
+}
+
+# source_name（中文名） → source_id 反向映射，用于没有 source_id 字段时回退
+_NAME_TO_PLATFORM_ID = {}
+for _pid, (_icon, _name) in PLATFORM_ICON_MAP.items():
+    if _name and _name not in _NAME_TO_PLATFORM_ID:
+        _NAME_TO_PLATFORM_ID[_name] = _pid
+# 额外补一些常见中文别名
+_NAME_TO_PLATFORM_ID.setdefault("微博", "weibo")
+_NAME_TO_PLATFORM_ID.setdefault("抖音", "douyin")
+_NAME_TO_PLATFORM_ID.setdefault("知乎", "zhihu")
+_NAME_TO_PLATFORM_ID.setdefault("bilibili 热搜", "bilibili-hot-search")
+_NAME_TO_PLATFORM_ID.setdefault("今日头条", "toutiao")
+_NAME_TO_PLATFORM_ID.setdefault("百度热搜", "baidu")
+_NAME_TO_PLATFORM_ID.setdefault("贴吧", "tieba")
+_NAME_TO_PLATFORM_ID.setdefault("华尔街见闻", "wallstreetcn-hot")
+_NAME_TO_PLATFORM_ID.setdefault("澎湃新闻", "thepaper")
+_NAME_TO_PLATFORM_ID.setdefault("凤凰网", "ifeng")
+_NAME_TO_PLATFORM_ID.setdefault("财联社热门", "cls-hot")
+
+
+def _platform_icon(source_id: str, source_name: str = "") -> str:
+    """根据 platform_id 返回 (emoji, 短名) 元组，未知平台返回 ('📌', platform_id)"""
+    # 优先用 source_id
+    if source_id and source_id in PLATFORM_ICON_MAP:
+        return PLATFORM_ICON_MAP[source_id]
+    # 回退：用 source_name 反查 source_id
+    if not source_id and source_name:
+        source_id = _NAME_TO_PLATFORM_ID.get(source_name, "")
+        if source_id and source_id in PLATFORM_ICON_MAP:
+            return PLATFORM_ICON_MAP[source_id]
+    # 真的找不到
+    if source_id:
+        return ("📌", source_id)
+    return ("📌", source_name or "")
+
+
+def _render_source_meta(title_data: Dict) -> str:
+    """
+    渲染新闻来源的详细标注，作为 meta 标签放在 source 旁边。
+
+    显示:
+    - 平台图标 + 短名（用户最关心的"具体哪个平台"）
+    - 资源类型（关键词搜索 / 问题 / 文章 / 热议话题 / 热榜条目 等）
+    - 搜索关键词（如果是搜索类）
+    - 热度值（来自 extra.info，如"734 万热度"）
+    - 摘要（来自 extra.hover）
+    - 发布时间（来自 extra.date）
+    """
+    parts = []
+
+    source_id = title_data.get("source_id") or ""
+    source_name = title_data.get("source_name") or ""
+
+    if source_id or source_name:
+        icon, short_name = _platform_icon(source_id, source_name)
+        # 如果 source_id 仍未知，title 显示 platform_id（用于调试）
+        id_for_tooltip = source_id or _NAME_TO_PLATFORM_ID.get(source_name, source_name)
+        # 显示平台图标和短名
+        parts.append(f'<span class="meta-tag platform-icon" title="平台ID: {html_escape(id_for_tooltip)}">{icon} {html_escape(short_name)}</span>')
+
+    # 资源类型标签
+    url_meta = title_data.get("url_meta") or {}
+    if not url_meta and title_data.get("url"):
+        # 没有 url_meta 时实时解析
+        url_meta = parse_url_resource(title_data.get("url", ""), source_id)
+
+    rtype_label = format_resource_label(url_meta) if url_meta else ""
+    if rtype_label:
+        # 给 title 属性（hover 提示）显示完整信息
+        rtype = url_meta.get("type", "")
+        rtype_id = url_meta.get("id", "")
+        rtype_kw = url_meta.get("keyword", "")
+        tooltip_parts = [f"资源类型: {rtype}"]
+        if rtype_id:
+            tooltip_parts.append(f"ID: {rtype_id}")
+        if rtype_kw:
+            tooltip_parts.append(f"关键词: {rtype_kw}")
+        tooltip = " | ".join(tooltip_parts)
+        parts.append(f'<span class="meta-tag resource-tag" title="{html_escape(tooltip)}">{html_escape(rtype_label)}</span>')
+
+    # 热度值（知乎的"734 万热度"、百度的"搜索指数"等）
+    extra = title_data.get("extra") or {}
+    info = extra.get("info") or extra.get("hot") or extra.get("heat") or ""
+    if info:
+        parts.append(f'<span class="meta-tag heat-tag">🔥 {html_escape(str(info))}</span>')
+
+    # 摘要（hover 摘要）
+    hover = extra.get("hover") or extra.get("summary") or extra.get("desc") or ""
+    if hover:
+        # 截短摘要，避免太长的 tooltip
+        hover_short = hover if len(hover) <= 60 else hover[:57] + "..."
+        parts.append(f'<span class="meta-tag hover-tag" title="{html_escape(hover)}">📝 {html_escape(hover_short)}</span>')
+
+    # 发布时间
+    date = extra.get("date") or extra.get("publish_time") or extra.get("pubtime") or ""
+    if date:
+        parts.append(f'<span class="meta-tag date-tag">⏰ {html_escape(str(date))}</span>')
+
+    return "".join(parts)
 
 
 def render_html_content(
@@ -427,6 +550,47 @@ def render_html_content(
                 font-size: 12px;
                 margin-left: 2px;
                 vertical-align: middle;
+            }
+
+            /* 来源详细标注（平台图标/资源类型/热度/摘要/日期） */
+            .meta-tag {
+                display: inline-block;
+                font-size: 11px;
+                font-weight: 500;
+                padding: 2px 7px;
+                border-radius: 10px;
+                margin-left: 4px;
+                line-height: 1.4;
+                max-width: 220px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                vertical-align: middle;
+            }
+            .platform-icon {
+                background: #f3f4f6;
+                color: #374151;
+                border: 1px solid #e5e7eb;
+            }
+            .resource-tag {
+                background: #ede9fe;
+                color: #6d28d9;
+                border: 1px solid #ddd6fe;
+            }
+            .heat-tag {
+                background: #fef3c7;
+                color: #b45309;
+                border: 1px solid #fde68a;
+            }
+            .hover-tag {
+                background: #ecfdf5;
+                color: #047857;
+                border: 1px solid #a7f3d0;
+            }
+            .date-tag {
+                background: #f3f4f6;
+                color: #6b7280;
+                border: 1px solid #e5e7eb;
             }
 
             .time-info {
@@ -1682,6 +1846,11 @@ def render_html_content(
                 if count_info > 1:
                     stats_html += f'<span class="count-info">{count_info}次</span>'
 
+                # 来源详细标注（平台图标 + 资源类型 + 热度/摘要/日期）
+                meta_html = _render_source_meta(title_data)
+                if meta_html:
+                    stats_html += meta_html
+
                 stats_html += """
                             </div>
                             <div class="news-title">"""
@@ -1762,6 +1931,11 @@ def render_html_content(
                     new_titles_html += f'<a href="{escaped_url}" target="_blank" class="news-link">{escaped_title}</a>'
                 else:
                     new_titles_html += escaped_title
+
+                # 来源详细标注（平台图标 + 资源类型 + 热度/摘要/日期）
+                meta_html = _render_source_meta(title_data)
+                if meta_html:
+                    new_titles_html += meta_html
 
                 new_titles_html += """
                                 </div>

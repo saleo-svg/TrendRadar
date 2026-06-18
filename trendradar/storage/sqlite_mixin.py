@@ -8,11 +8,33 @@ SQLite 存储 Mixin
 import sqlite3
 from abc import abstractmethod
 from datetime import datetime
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from trendradar.storage.base import NewsItem, NewsData, RSSItem, RSSData
-from trendradar.utils.url import normalize_url
+from trendradar.utils.url import normalize_url, parse_url_resource
+
+
+def _serialize_extra(extra: Any) -> str:
+    """序列化 extra 字典为 JSON 字符串，None/空 序列化为 '{}'"""
+    if not extra:
+        return "{}"
+    try:
+        return json.dumps(extra, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return "{}"
+
+
+def _deserialize_extra(json_str: Any) -> Dict[str, Any]:
+    """从 JSON 字符串反序列化 extra，空/无效返回空 dict"""
+    if not json_str:
+        return {}
+    try:
+        data = json.loads(json_str)
+        return data if isinstance(data, dict) else {}
+    except (TypeError, ValueError):
+        return {}
 
 
 class SQLiteStorageMixin:
@@ -98,8 +120,23 @@ class SQLiteStorageMixin:
 
         if db_type == "rss":
             self._migrate_rss_schema(conn)
+        else:
+            self._migrate_news_schema(conn)
 
         conn.commit()
+
+    def _migrate_news_schema(self, conn: sqlite3.Connection) -> None:
+        """迁移 news_items 表结构（为已有数据库添加 extra_json/url_meta_json 列）"""
+        try:
+            cursor = conn.execute("PRAGMA table_info(news_items)")
+            columns = {row[1] for row in cursor.fetchall()}
+            if "extra_json" not in columns:
+                conn.execute("ALTER TABLE news_items ADD COLUMN extra_json TEXT DEFAULT '{}'")
+            if "url_meta_json" not in columns:
+                conn.execute("ALTER TABLE news_items ADD COLUMN url_meta_json TEXT DEFAULT '{}'")
+        except sqlite3.OperationalError:
+            # 表不存在时跳过（首次创建会从 schema.sql 创建）
+            pass
 
     def _migrate_rss_schema(self, conn: sqlite3.Connection) -> None:
         """迁移 rss_items 表结构（为已有数据库添加 guid 列）"""
@@ -158,6 +195,10 @@ class SQLiteStorageMixin:
                         # 标准化 URL（去除动态参数，如微博的 band_rank）
                         normalized_url = normalize_url(item.url, source_id) if item.url else ""
 
+                        # 序列化 extra（热度/摘要/发布时间） + url_meta（资源类型）
+                        extra_json = _serialize_extra(getattr(item, "extra", {}))
+                        url_meta_json = _serialize_extra(getattr(item, "url_meta", {}))
+
                         # 检查是否已存在（通过标准化 URL + platform_id）
                         if normalized_url:
                             cursor.execute("""
@@ -200,21 +241,28 @@ class SQLiteStorageMixin:
                                         mobile_url = ?,
                                         last_crawl_time = ?,
                                         crawl_count = crawl_count + 1,
+                                        extra_json = CASE WHEN ? != '{}' THEN ? ELSE extra_json END,
+                                        url_meta_json = CASE WHEN ? != '{}' THEN ? ELSE url_meta_json END,
                                         updated_at = ?
                                     WHERE id = ?
                                 """, (update_title, item.rank, item.mobile_url,
-                                      data.crawl_time, now_str, existing_id))
+                                      data.crawl_time,
+                                      extra_json, extra_json,
+                                      url_meta_json, url_meta_json,
+                                      now_str, existing_id))
                                 updated_count += 1
                             else:
                                 # 不存在，插入新记录（存储标准化后的 URL）
                                 cursor.execute("""
                                     INSERT INTO news_items
                                     (title, platform_id, rank, url, mobile_url,
+                                     extra_json, url_meta_json,
                                      first_crawl_time, last_crawl_time, crawl_count,
                                      created_at, updated_at)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                                 """, (item.title, source_id, item.rank, normalized_url,
-                                      item.mobile_url, data.crawl_time, data.crawl_time,
+                                      item.mobile_url, extra_json, url_meta_json,
+                                      data.crawl_time, data.crawl_time,
                                       now_str, now_str))
                                 new_id = cursor.lastrowid
                                 # 记录初始排名
@@ -229,11 +277,13 @@ class SQLiteStorageMixin:
                             cursor.execute("""
                                 INSERT INTO news_items
                                 (title, platform_id, rank, url, mobile_url,
+                                 extra_json, url_meta_json,
                                  first_crawl_time, last_crawl_time, crawl_count,
                                  created_at, updated_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                             """, (item.title, source_id, item.rank, "",
-                                  item.mobile_url, data.crawl_time, data.crawl_time,
+                                  item.mobile_url, extra_json, url_meta_json,
+                                  data.crawl_time, data.crawl_time,
                                   now_str, now_str))
                             new_id = cursor.lastrowid
                             # 记录初始排名
@@ -358,6 +408,7 @@ class SQLiteStorageMixin:
             cursor.execute("""
                 SELECT n.id, n.title, n.platform_id, p.name as platform_name,
                        n.rank, n.url, n.mobile_url,
+                       n.extra_json, n.url_meta_json,
                        n.first_crawl_time, n.last_crawl_time, n.crawl_count
                 FROM news_items n
                 LEFT JOIN platforms p ON n.platform_id = p.id
@@ -421,6 +472,8 @@ class SQLiteStorageMixin:
                 platform_id = row[2]
                 title = row[1]
                 platform_name = row[3] or platform_id
+                extra = _deserialize_extra(row[7])
+                url_meta = _deserialize_extra(row[8])
 
                 id_to_name[platform_id] = platform_name
 
@@ -438,12 +491,14 @@ class SQLiteStorageMixin:
                     rank=row[4],
                     url=row[5] or "",
                     mobile_url=row[6] or "",
-                    crawl_time=row[8],  # last_crawl_time
+                    crawl_time=row[10],  # last_crawl_time
                     ranks=ranks,
-                    first_time=row[7],  # first_crawl_time
-                    last_time=row[8],   # last_crawl_time
-                    count=row[9],       # crawl_count
+                    first_time=row[9],   # first_crawl_time
+                    last_time=row[10],   # last_crawl_time
+                    count=row[11],       # crawl_count
                     rank_timeline=rank_timeline,
+                    extra=extra,
+                    url_meta=url_meta,
                 ))
 
             final_items = items
@@ -510,6 +565,7 @@ class SQLiteStorageMixin:
             cursor.execute("""
                 SELECT n.id, n.title, n.platform_id, p.name as platform_name,
                        n.rank, n.url, n.mobile_url,
+                       n.extra_json, n.url_meta_json,
                        n.first_crawl_time, n.last_crawl_time, n.crawl_count
                 FROM news_items n
                 LEFT JOIN platforms p ON n.platform_id = p.id
@@ -571,6 +627,8 @@ class SQLiteStorageMixin:
                 news_id = row[0]
                 platform_id = row[2]
                 platform_name = row[3] or platform_id
+                extra = _deserialize_extra(row[7])
+                url_meta = _deserialize_extra(row[8])
                 id_to_name[platform_id] = platform_name
 
                 if platform_id not in items:
@@ -587,12 +645,14 @@ class SQLiteStorageMixin:
                     rank=row[4],
                     url=row[5] or "",
                     mobile_url=row[6] or "",
-                    crawl_time=row[8],  # last_crawl_time
+                    crawl_time=row[10],  # last_crawl_time
                     ranks=ranks,
-                    first_time=row[7],  # first_crawl_time
-                    last_time=row[8],   # last_crawl_time
-                    count=row[9],       # crawl_count
+                    first_time=row[9],   # first_crawl_time
+                    last_time=row[10],   # last_crawl_time
+                    count=row[11],       # crawl_count
                     rank_timeline=rank_timeline,
+                    extra=extra,
+                    url_meta=url_meta,
                 ))
 
             # 获取失败的来源（针对最新一次抓取）

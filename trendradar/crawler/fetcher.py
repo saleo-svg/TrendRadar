@@ -211,14 +211,45 @@ class DataFetcher:
                         url = item.get("url", "")
                         mobile_url = item.get("mobileUrl", "")
 
+                        # 保留 newsnow API 返回的扩展信息
+                        # 实际 API 字段结构（来自 https://newsnow.busiyi.world/api/s）：
+                        #   item["id"]: 资源 ID（部分平台直接是 URL）
+                        #   item["extra"]: dict，包含子字段：
+                        #     - info: 热度值，如 "734 万热度"（知乎）
+                        #     - hover: 摘要/描述（知乎/百度等）
+                        #     - date: 发布时间（凤凰等）
+                        #     - icon: 角标（微博/B站等）
+                        item_extra = item.get("extra") or {}
+                        if not isinstance(item_extra, dict):
+                            item_extra = {}
+
+                        # 标准化 extra（只保留有值的字段，简化 key）
+                        extra: Dict = {}
+                        for extra_key in ("info", "hover", "date"):
+                            val = item_extra.get(extra_key)
+                            if val:
+                                extra[extra_key] = val
+                        # icon 是 dict 时只取 url 简化存储
+                        icon_val = item_extra.get("icon")
+                        if icon_val:
+                            if isinstance(icon_val, dict) and icon_val.get("url"):
+                                extra["icon"] = icon_val["url"]
+                            elif isinstance(icon_val, str):
+                                extra["icon"] = icon_val
+
                         if title in results[id_value]:
                             results[id_value][title]["ranks"].append(index)
+                            # 同一标题多次出现时，保留非空的 extra
+                            if extra and not results[id_value][title].get("extra"):
+                                results[id_value][title]["extra"] = extra
                         else:
                             results[id_value][title] = {
                                 "ranks": [index],
                                 "url": url,
                                 "mobileUrl": mobile_url,
                             }
+                            if extra:
+                                results[id_value][title]["extra"] = extra
                 except json.JSONDecodeError:
                     print(f"解析 {id_value} 响应失败")
                     failed_ids.append(id_value)

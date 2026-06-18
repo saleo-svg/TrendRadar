@@ -251,6 +251,8 @@ def count_word_frequency(
             source_ranks = title_data.get("ranks", [])
             source_url = title_data.get("url", "")
             source_mobile_url = title_data.get("mobileUrl", "")
+            source_extra = title_data.get("extra", {}) or {}
+            source_url_meta = title_data.get("url_meta", {}) or {}
 
             # 找到匹配的词组（防御性转换确保类型安全）
             title_lower = str(title).lower() if not isinstance(title, str) else title.lower()
@@ -311,6 +313,11 @@ def count_word_frequency(
                     url = info.get("url", source_url)
                     mobile_url = info.get("mobileUrl", source_mobile_url)
                     rank_timeline = info.get("rank_timeline", [])
+                    # 优先用历史信息里的 extra/url_meta
+                    if info.get("extra"):
+                        source_extra = info["extra"]
+                    if info.get("url_meta"):
+                        source_url_meta = info["url_meta"]
                 elif (
                     title_info
                     and source_id in title_info
@@ -325,6 +332,10 @@ def count_word_frequency(
                     url = info.get("url", source_url)
                     mobile_url = info.get("mobileUrl", source_mobile_url)
                     rank_timeline = info.get("rank_timeline", [])
+                    if info.get("extra"):
+                        source_extra = info["extra"]
+                    if info.get("url_meta"):
+                        source_url_meta = info["url_meta"]
 
                 if not ranks:
                     ranks = [99]
@@ -347,6 +358,7 @@ def count_word_frequency(
                     {
                         "title": title,
                         "source_name": source_name,
+                        "source_id": source_id,
                         "first_time": first_time,
                         "last_time": last_time,
                         "time_display": time_display,
@@ -357,6 +369,8 @@ def count_word_frequency(
                         "mobileUrl": mobile_url,
                         "is_new": is_new,
                         "rank_timeline": rank_timeline,
+                        "extra": source_extra,
+                        "url_meta": source_url_meta,
                     }
                 )
 

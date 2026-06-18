@@ -86,6 +86,9 @@ def prepare_report_data(
                     "mobile_url": mobile_url,
                     "is_new": True,
                     "rank_timeline": title_data.get("rank_timeline", []),
+                    "extra": title_data.get("extra") or {},
+                    "url_meta": title_data.get("url_meta") or {},
+                    "source_id": source_id,
                 }
                 source_titles.append(processed_title)
 
@@ -116,6 +119,9 @@ def prepare_report_data(
                 "mobile_url": title_data.get("mobileUrl", ""),
                 "is_new": title_data.get("is_new", False),
                 "rank_timeline": title_data.get("rank_timeline", []),
+                "extra": title_data.get("extra") or {},
+                "url_meta": title_data.get("url_meta") or {},
+                "source_id": title_data.get("source_id", ""),
             }
             processed_titles.append(processed_title)
 

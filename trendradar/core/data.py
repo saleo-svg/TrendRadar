@@ -56,11 +56,16 @@ def read_all_today_titles_from_storage(
                 last_time = item.last_time or item.crawl_time
                 count = item.count
                 rank_timeline = item.rank_timeline
+                # NewsItem 上 extra/url_meta 字段（sqlite 读取路径）
+                extra = getattr(item, "extra", {}) or {}
+                url_meta = getattr(item, "url_meta", {}) or {}
 
                 all_results[source_id][title] = {
                     "ranks": ranks,
                     "url": item.url or "",
                     "mobileUrl": item.mobile_url or "",
+                    "extra": extra,
+                    "url_meta": url_meta,
                 }
 
                 title_info[source_id][title] = {
@@ -71,6 +76,8 @@ def read_all_today_titles_from_storage(
                     "url": item.url or "",
                     "mobileUrl": item.mobile_url or "",
                     "rank_timeline": rank_timeline,
+                    "extra": extra,
+                    "url_meta": url_meta,
                 }
 
         return all_results, final_id_to_name, title_info
@@ -150,6 +157,8 @@ def detect_latest_new_titles_from_storage(
                     "ranks": [item.rank],
                     "url": item.url or "",
                     "mobileUrl": item.mobile_url or "",
+                    "extra": getattr(item, "extra", {}) or {},
+                    "url_meta": getattr(item, "url_meta", {}) or {},
                 }
 
         # 步骤2：收集历史标题

@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS news_items (
     rank INTEGER NOT NULL,
     url TEXT DEFAULT '',
     mobile_url TEXT DEFAULT '',
+    extra_json TEXT DEFAULT '{}',      -- 扩展信息（热度值/摘要/发布时间等）
+    url_meta_json TEXT DEFAULT '{}',   -- 资源类型（从 URL 解析）
     first_crawl_time TEXT NOT NULL,      -- 首次抓取时间
     last_crawl_time TEXT NOT NULL,       -- 最后抓取时间
     crawl_count INTEGER DEFAULT 1,       -- 抓取次数

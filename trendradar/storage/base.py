@@ -31,6 +31,13 @@ class NewsItem:
                                         # 格式: [{"time": "09:30", "rank": 1}, {"time": "10:00", "rank": 2}, ...]
                                         # None 表示脱榜: [{"time": "11:00", "rank": None}]
 
+    # 来源标注信息（由 fetcher 写入，序列化进 sqlite）
+    # 包含: info (热度值/数值), hover (摘要), date (发布时间), icon (角标)
+    extra: Dict[str, Any] = field(default_factory=dict)
+    # 资源类型（从 URL 解析），由 utils.url.parse_url_resource 计算
+    # 包含: type, id, keyword
+    url_meta: Dict[str, str] = field(default_factory=dict)
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
@@ -46,6 +53,8 @@ class NewsItem:
             "last_time": self.last_time,
             "count": self.count,
             "rank_timeline": self.rank_timeline,
+            "extra": self.extra,
+            "url_meta": self.url_meta,
         }
 
     @classmethod
@@ -64,6 +73,8 @@ class NewsItem:
             last_time=data.get("last_time", ""),
             count=data.get("count", 1),
             rank_timeline=data.get("rank_timeline", []),
+            extra=data.get("extra", {}) or {},
+            url_meta=data.get("url_meta", {}) or {},
         )
 
 
@@ -538,7 +549,7 @@ def convert_crawl_results_to_news_data(
     将爬虫结果转换为 NewsData 格式
 
     Args:
-        results: 爬虫返回的结果 {source_id: {title: {ranks: [], url: "", mobileUrl: ""}}}
+        results: 爬虫返回的结果 {source_id: {title: {ranks: [], url: "", mobileUrl: "", extra: {}, url_meta: {}}}}
         id_to_name: 来源ID到名称的映射
         failed_ids: 失败的来源ID
         crawl_time: 抓取时间（HH:MM）
@@ -547,6 +558,8 @@ def convert_crawl_results_to_news_data(
     Returns:
         NewsData 对象
     """
+    from trendradar.utils.url import parse_url_resource
+
     items = {}
 
     for source_id, titles_data in results.items():
@@ -557,6 +570,9 @@ def convert_crawl_results_to_news_data(
             ranks = data.get("ranks", [])
             url = data.get("url", "")
             mobile_url = data.get("mobileUrl", "")
+            extra = data.get("extra", {}) or {}
+            # url_meta 可以从 fetcher 传来，否则用 url 解析
+            url_meta = data.get("url_meta") or parse_url_resource(url, source_id)
 
             rank = ranks[0] if ranks else 99
 
@@ -572,6 +588,8 @@ def convert_crawl_results_to_news_data(
                 first_time=crawl_time,
                 last_time=crawl_time,
                 count=1,
+                extra=extra,
+                url_meta=url_meta,
             )
             news_list.append(news_item)
 
